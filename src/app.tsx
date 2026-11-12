@@ -2,7 +2,7 @@ import { Suspense, useCallback, useState, useEffect, useRef } from "react";
 import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
 import { getToolName, isToolUIPart, type UIMessage } from "ai";
-import type { ChatAgent } from "./server";
+import type { IncidentAgent } from "./server";
 import {
   Badge,
   Button,
@@ -223,15 +223,17 @@ function ToolPartView({
 
 // ── Main chat ─────────────────────────────────────────────────────────
 
-function Chat() {
+function Chat({ incidentId }: { incidentId: string }) {
   const [connected, setConnected] = useState(false);
   const [input, setInput] = useState("");
   const [showDebug, setShowDebug] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const agent = useAgent<ChatAgent>({
-    agent: "ChatAgent",
+  // One agent instance (Durable Object) per incident id
+  const agent = useAgent<IncidentAgent>({
+    agent: "IncidentAgent",
+    name: incidentId,
     onOpen: useCallback(() => setConnected(true), []),
     onClose: useCallback(() => setConnected(false), []),
     onError: useCallback(
@@ -280,11 +282,13 @@ function Chat() {
         <div className="max-w-3xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
             <h1 className="text-lg font-semibold text-kumo-default">
-              <span className="mr-2">⛅</span>Agent Starter
+              <a href="/" className="hover:underline">
+                On-call Copilot
+              </a>
             </h1>
             <Badge variant="secondary">
               <ChatCircleDotsIcon size={12} weight="bold" className="mr-1" />
-              AI Chat
+              {incidentId}
             </Badge>
           </div>
           <div className="flex items-center gap-3">
@@ -513,7 +517,90 @@ function Chat() {
   );
 }
 
+// ── Routing ───────────────────────────────────────────────────────────
+
+/** Normalise free text into a URL/instance-safe incident id, e.g. "DB Latency!" → "db-latency". */
+function toIncidentId(raw: string): string {
+  return raw
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64)
+    .replace(/-+$/, "");
+}
+
+/** Returns the incident id for /incident/<id>, or null for any other path. */
+function incidentIdFromPath(pathname: string): string | null {
+  const match = pathname.match(/^\/incident\/([^/]+)\/?$/);
+  if (!match) return null;
+  let raw: string;
+  try {
+    raw = decodeURIComponent(match[1]);
+  } catch {
+    raw = match[1];
+  }
+  return toIncidentId(raw) || null;
+}
+
+function Home() {
+  const [name, setName] = useState("");
+  const id = toIncidentId(name);
+
+  return (
+    <div className="flex flex-col items-center justify-center h-screen bg-kumo-elevated px-5">
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (id) window.location.assign(`/incident/${id}`);
+        }}
+        className="w-full max-w-md space-y-3"
+      >
+        <h1 className="text-xl font-semibold text-kumo-default">
+          On-call Copilot
+        </h1>
+        <Text size="sm" variant="secondary">
+          Open an incident by name. Each incident has its own chat history.
+        </Text>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            aria-label="Incident name"
+            placeholder="e.g. db-latency"
+            className="flex-1 px-3 py-2 text-sm rounded-lg border border-kumo-line bg-kumo-base text-kumo-default placeholder:text-kumo-inactive focus:outline-none focus:ring-2 focus:ring-kumo-ring"
+          />
+          <Button type="submit" variant="primary" disabled={!id}>
+            Open
+          </Button>
+        </div>
+        {name.trim() && id && id !== name.trim() && (
+          <Text size="xs" variant="secondary">
+            Will open /incident/{id}
+          </Text>
+        )}
+      </form>
+    </div>
+  );
+}
+
 export default function App() {
+  const pathname = window.location.pathname;
+  const incidentId = incidentIdFromPath(pathname);
+
+  // Canonicalise the URL (e.g. /incident/DB%20Latency → /incident/db-latency)
+  // so the same incident always maps to the same agent instance.
+  useEffect(() => {
+    if (incidentId && pathname !== `/incident/${incidentId}`) {
+      window.history.replaceState(null, "", `/incident/${incidentId}`);
+    } else if (!incidentId && pathname !== "/") {
+      window.history.replaceState(null, "", "/");
+    }
+  }, [incidentId, pathname]);
+
+  if (!incidentId) return <Home />;
+
   return (
     <Suspense
       fallback={
@@ -522,7 +609,7 @@ export default function App() {
         </div>
       }
     >
-      <Chat />
+      <Chat key={incidentId} incidentId={incidentId} />
     </Suspense>
   );
 }

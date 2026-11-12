@@ -4,7 +4,7 @@ import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
 import { dedupeAiBinding } from "./dedupe-ai-binding";
 import { convertToModelMessages, pruneMessages, streamText } from "ai";
 
-export class ChatAgent extends AIChatAgent<Env> {
+export class IncidentAgent extends AIChatAgent<Env> {
   maxPersistedMessages = 100;
   chatRecovery = true;
 
