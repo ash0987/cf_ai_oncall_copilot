@@ -2,7 +2,7 @@ import { Suspense, useCallback, useState, useEffect, useRef } from "react";
 import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
 import { getToolName, isToolUIPart, type UIMessage } from "ai";
-import type { IncidentAgent } from "./server";
+import type { IncidentAgent, IncidentState, Note, NoteStatus } from "./server";
 import {
   Badge,
   Button,
@@ -28,7 +28,10 @@ import {
   XCircleIcon,
   BrainIcon,
   CaretDownIcon,
-  BugIcon
+  BugIcon,
+  NotePencilIcon,
+  PlusIcon,
+  ArrowCounterClockwiseIcon
 } from "@phosphor-icons/react";
 
 // ── Small components ──────────────────────────────────────────────────
@@ -221,19 +224,200 @@ function ToolPartView({
   return null;
 }
 
+// ── Notes panel ───────────────────────────────────────────────────────
+
+function NoteItem({
+  note,
+  disabled,
+  onSetStatus,
+  onDelete
+}: {
+  note: Note;
+  disabled: boolean;
+  onSetStatus: (id: string, status: NoteStatus) => void;
+  onDelete: (id: string) => void;
+}) {
+  const ruledOut = note.status === "ruled_out";
+  return (
+    <li className="group flex items-start gap-2 rounded-lg border border-kumo-line bg-kumo-base px-3 py-2">
+      <span
+        className={`flex-1 min-w-0 text-sm break-words ${
+          ruledOut ? "line-through text-kumo-inactive" : "text-kumo-default"
+        }`}
+      >
+        {note.text}
+      </span>
+      <div className="flex shrink-0 gap-0.5">
+        <Button
+          variant="ghost"
+          size="sm"
+          shape="square"
+          disabled={disabled}
+          aria-label={ruledOut ? "Reopen note" : "Mark as ruled out"}
+          title={ruledOut ? "Reopen" : "Mark as ruled out"}
+          icon={
+            ruledOut ? (
+              <ArrowCounterClockwiseIcon size={14} />
+            ) : (
+              <XCircleIcon size={14} />
+            )
+          }
+          onClick={() => onSetStatus(note.id, ruledOut ? "open" : "ruled_out")}
+        />
+        <Button
+          variant="ghost"
+          size="sm"
+          shape="square"
+          disabled={disabled}
+          aria-label="Delete note"
+          title="Delete"
+          icon={<TrashIcon size={14} />}
+          onClick={() => onDelete(note.id)}
+        />
+      </div>
+    </li>
+  );
+}
+
+function NotesPanel({
+  notes,
+  connected,
+  onAdd,
+  onSetStatus,
+  onDelete
+}: {
+  notes: Note[];
+  connected: boolean;
+  onAdd: (text: string) => Promise<void>;
+  onSetStatus: (id: string, status: NoteStatus) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const open = notes.filter((n) => n.status === "open");
+  const ruledOut = notes.filter((n) => n.status === "ruled_out");
+
+  const submit = async () => {
+    const text = draft.trim();
+    if (!text || saving) return;
+    setSaving(true);
+    try {
+      await onAdd(text);
+      setDraft("");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="px-4 py-3 border-b border-kumo-line">
+        <div className="flex items-center gap-2">
+          <NotePencilIcon size={16} className="text-kumo-subtle" />
+          <Text size="sm" bold>
+            Incident notes
+          </Text>
+        </div>
+        <Text size="xs" variant="secondary">
+          Hypotheses the AI sees on every reply.
+        </Text>
+      </div>
+
+      <form
+        className="flex gap-2 px-4 py-3 border-b border-kumo-line"
+        onSubmit={(e) => {
+          e.preventDefault();
+          submit();
+        }}
+      >
+        <input
+          type="text"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          maxLength={500}
+          aria-label="New note"
+          placeholder="e.g. disk full on primary"
+          className="flex-1 min-w-0 px-3 py-1.5 text-sm rounded-lg border border-kumo-line bg-kumo-base text-kumo-default placeholder:text-kumo-inactive focus:outline-none focus:ring-2 focus:ring-kumo-ring"
+        />
+        <Button
+          type="submit"
+          variant="primary"
+          size="sm"
+          shape="square"
+          aria-label="Add note"
+          icon={<PlusIcon size={14} />}
+          disabled={!draft.trim() || !connected || saving}
+        />
+      </form>
+
+      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
+        {notes.length === 0 && (
+          <Text size="xs" variant="secondary">
+            No notes yet. Add what you suspect, then mark items as ruled out as
+            you check them.
+          </Text>
+        )}
+        {open.length > 0 && (
+          <section className="space-y-2">
+            <Text size="xs" variant="secondary" bold>
+              Open ({open.length})
+            </Text>
+            <ul className="space-y-2">
+              {open.map((n) => (
+                <NoteItem
+                  key={n.id}
+                  note={n}
+                  disabled={!connected}
+                  onSetStatus={onSetStatus}
+                  onDelete={onDelete}
+                />
+              ))}
+            </ul>
+          </section>
+        )}
+        {ruledOut.length > 0 && (
+          <section className="space-y-2">
+            <Text size="xs" variant="secondary" bold>
+              Ruled out ({ruledOut.length})
+            </Text>
+            <ul className="space-y-2">
+              {ruledOut.map((n) => (
+                <NoteItem
+                  key={n.id}
+                  note={n}
+                  disabled={!connected}
+                  onSetStatus={onSetStatus}
+                  onDelete={onDelete}
+                />
+              ))}
+            </ul>
+          </section>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Main chat ─────────────────────────────────────────────────────────
 
 function Chat({ incidentId }: { incidentId: string }) {
   const [connected, setConnected] = useState(false);
   const [input, setInput] = useState("");
   const [showDebug, setShowDebug] = useState(false);
+  const [notes, setNotes] = useState<Note[]>([]);
+  const [showNotes, setShowNotes] = useState(false); // small screens only
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // One agent instance (Durable Object) per incident id
-  const agent = useAgent<IncidentAgent>({
+  const agent = useAgent<IncidentAgent, IncidentState>({
     agent: "IncidentAgent",
     name: incidentId,
+    // Server pushes the full state on connect and after every change
+    onStateUpdate: useCallback(
+      (state: IncidentState) => setNotes(state?.notes ?? []),
+      []
+    ),
     onOpen: useCallback(() => setConnected(true), []),
     onClose: useCallback(() => setConnected(false), []),
     onError: useCallback(
@@ -275,6 +459,35 @@ function Chat({ incidentId }: { incidentId: string }) {
     if (textareaRef.current) textareaRef.current.style.height = "auto";
   }, [input, isStreaming, sendMessage]);
 
+  // Notes are edited via RPC; the updated list arrives through onStateUpdate.
+  const addNote = useCallback(
+    async (text: string) => {
+      try {
+        await agent.stub.addNote(text);
+      } catch (e) {
+        console.error("Failed to add note:", e);
+        throw e;
+      }
+    },
+    [agent]
+  );
+  const setNoteStatus = useCallback(
+    (id: string, status: NoteStatus) => {
+      agent.stub
+        .setNoteStatus(id, status)
+        .catch((e: unknown) => console.error("Failed to update note:", e));
+    },
+    [agent]
+  );
+  const deleteNote = useCallback(
+    (id: string) => {
+      agent.stub
+        .deleteNote(id)
+        .catch((e: unknown) => console.error("Failed to delete note:", e));
+    },
+    [agent]
+  );
+
   return (
     <div className="flex flex-col h-screen bg-kumo-elevated relative">
       {/* Header */}
@@ -314,6 +527,14 @@ function Chat({ incidentId }: { incidentId: string }) {
             <ThemeToggle />
             <Button
               variant="secondary"
+              className="md:hidden"
+              icon={<NotePencilIcon size={16} />}
+              onClick={() => setShowNotes((v) => !v)}
+            >
+              Notes ({notes.length})
+            </Button>
+            <Button
+              variant="secondary"
               icon={<TrashIcon size={16} />}
               onClick={clearHistory}
             >
@@ -323,195 +544,220 @@ function Chat({ incidentId }: { incidentId: string }) {
         </div>
       </header>
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto">
-        <div className="max-w-3xl mx-auto px-5 py-6 space-y-5">
-          {messages.length === 0 && (
-            <Empty
-              icon={<ChatCircleDotsIcon size={32} />}
-              title="Start a conversation"
-              contents={
-                <div className="flex flex-wrap justify-center gap-2">
-                  {[
-                    "p99 latency on the orders DB jumped from 20ms to 900ms",
-                    "API 5xx rate spiked to 12% right after a deploy",
-                    "Pods are crash-looping with OOMKilled"
-                  ].map((prompt) => (
-                    <Button
-                      key={prompt}
-                      variant="outline"
-                      size="sm"
-                      disabled={isStreaming}
-                      onClick={() => {
-                        sendMessage({
-                          role: "user",
-                          parts: [{ type: "text", text: prompt }]
-                        });
-                      }}
-                    >
-                      {prompt}
-                    </Button>
-                  ))}
-                </div>
-              }
-            />
-          )}
-
-          {messages.map((message: UIMessage, index: number) => {
-            const isUser = message.role === "user";
-            const isLastAssistant =
-              message.role === "assistant" && index === messages.length - 1;
-
-            return (
-              <div key={message.id} className="space-y-2">
-                {showDebug && (
-                  <pre className="text-[11px] text-kumo-subtle bg-kumo-control rounded-lg p-3 overflow-auto max-h-64">
-                    {JSON.stringify(message, null, 2)}
-                  </pre>
-                )}
-
-                {/* Render parts in chronological (array) order */}
-                {message.parts.map((part, i) => {
-                  const key = `${message.id}-${i}`;
-
-                  if (isToolUIPart(part)) {
-                    return (
-                      <ToolPartView
-                        key={key}
-                        part={part}
-                        addToolApprovalResponse={addToolApprovalResponse}
-                      />
-                    );
+      <div className="flex flex-1 min-h-0 relative">
+        <div className="flex flex-col flex-1 min-w-0">
+          {/* Messages */}
+          <div className="flex-1 overflow-y-auto">
+            <div className="max-w-3xl mx-auto px-5 py-6 space-y-5">
+              {messages.length === 0 && (
+                <Empty
+                  icon={<ChatCircleDotsIcon size={32} />}
+                  title="Start a conversation"
+                  contents={
+                    <div className="flex flex-wrap justify-center gap-2">
+                      {[
+                        "p99 latency on the orders DB jumped from 20ms to 900ms",
+                        "API 5xx rate spiked to 12% right after a deploy",
+                        "Pods are crash-looping with OOMKilled"
+                      ].map((prompt) => (
+                        <Button
+                          key={prompt}
+                          variant="outline"
+                          size="sm"
+                          disabled={isStreaming}
+                          onClick={() => {
+                            sendMessage({
+                              role: "user",
+                              parts: [{ type: "text", text: prompt }]
+                            });
+                          }}
+                        >
+                          {prompt}
+                        </Button>
+                      ))}
+                    </div>
                   }
+                />
+              )}
 
-                  if (part.type === "reasoning") {
-                    if (!part.text.trim()) return null;
-                    const isDone = part.state === "done" || !isStreaming;
-                    return (
-                      <div key={key} className="flex justify-start">
-                        <details className="max-w-[85%] w-full" open={!isDone}>
-                          <summary className="flex items-center gap-2 cursor-pointer px-3 py-2 rounded-lg bg-purple-500/10 border border-purple-500/20 text-sm select-none">
-                            <BrainIcon size={14} className="text-purple-400" />
-                            <span className="font-medium text-kumo-default">
-                              Reasoning
-                            </span>
-                            {isDone ? (
-                              <span className="text-xs text-kumo-success">
-                                Complete
-                              </span>
-                            ) : (
-                              <span className="text-xs text-kumo-brand">
-                                Thinking...
-                              </span>
-                            )}
-                            <CaretDownIcon
-                              size={14}
-                              className="ml-auto text-kumo-inactive"
-                            />
-                          </summary>
-                          <pre className="mt-2 px-3 py-2 rounded-lg bg-kumo-control text-xs text-kumo-default whitespace-pre-wrap overflow-auto max-h-64">
-                            {part.text}
-                          </pre>
-                        </details>
-                      </div>
-                    );
-                  }
+              {messages.map((message: UIMessage, index: number) => {
+                const isUser = message.role === "user";
+                const isLastAssistant =
+                  message.role === "assistant" && index === messages.length - 1;
 
-                  if (part.type === "text") {
-                    if (!part.text) return null;
+                return (
+                  <div key={message.id} className="space-y-2">
+                    {showDebug && (
+                      <pre className="text-[11px] text-kumo-subtle bg-kumo-control rounded-lg p-3 overflow-auto max-h-64">
+                        {JSON.stringify(message, null, 2)}
+                      </pre>
+                    )}
 
-                    if (isUser) {
-                      return (
-                        <div key={key} className="flex justify-end">
-                          <div className="max-w-[85%] px-4 py-2.5 rounded-2xl rounded-br-md bg-kumo-contrast text-kumo-inverse leading-relaxed">
-                            {part.text}
+                    {/* Render parts in chronological (array) order */}
+                    {message.parts.map((part, i) => {
+                      const key = `${message.id}-${i}`;
+
+                      if (isToolUIPart(part)) {
+                        return (
+                          <ToolPartView
+                            key={key}
+                            part={part}
+                            addToolApprovalResponse={addToolApprovalResponse}
+                          />
+                        );
+                      }
+
+                      if (part.type === "reasoning") {
+                        if (!part.text.trim()) return null;
+                        const isDone = part.state === "done" || !isStreaming;
+                        return (
+                          <div key={key} className="flex justify-start">
+                            <details
+                              className="max-w-[85%] w-full"
+                              open={!isDone}
+                            >
+                              <summary className="flex items-center gap-2 cursor-pointer px-3 py-2 rounded-lg bg-purple-500/10 border border-purple-500/20 text-sm select-none">
+                                <BrainIcon
+                                  size={14}
+                                  className="text-purple-400"
+                                />
+                                <span className="font-medium text-kumo-default">
+                                  Reasoning
+                                </span>
+                                {isDone ? (
+                                  <span className="text-xs text-kumo-success">
+                                    Complete
+                                  </span>
+                                ) : (
+                                  <span className="text-xs text-kumo-brand">
+                                    Thinking...
+                                  </span>
+                                )}
+                                <CaretDownIcon
+                                  size={14}
+                                  className="ml-auto text-kumo-inactive"
+                                />
+                              </summary>
+                              <pre className="mt-2 px-3 py-2 rounded-lg bg-kumo-control text-xs text-kumo-default whitespace-pre-wrap overflow-auto max-h-64">
+                                {part.text}
+                              </pre>
+                            </details>
                           </div>
-                        </div>
-                      );
-                    }
+                        );
+                      }
 
-                    return (
-                      <div key={key} className="flex justify-start">
-                        <div className="max-w-[85%] rounded-2xl rounded-bl-md bg-kumo-base text-kumo-default leading-relaxed">
-                          <Streamdown
-                            className="sd-theme rounded-2xl rounded-bl-md p-3"
-                            plugins={{ code }}
-                            controls={false}
-                            isAnimating={isLastAssistant && isStreaming}
-                          >
-                            {part.text}
-                          </Streamdown>
-                        </div>
-                      </div>
-                    );
-                  }
+                      if (part.type === "text") {
+                        if (!part.text) return null;
 
-                  return null;
-                })}
-              </div>
-            );
-          })}
+                        if (isUser) {
+                          return (
+                            <div key={key} className="flex justify-end">
+                              <div className="max-w-[85%] px-4 py-2.5 rounded-2xl rounded-br-md bg-kumo-contrast text-kumo-inverse leading-relaxed">
+                                {part.text}
+                              </div>
+                            </div>
+                          );
+                        }
 
-          <div ref={messagesEndRef} />
-        </div>
-      </div>
+                        return (
+                          <div key={key} className="flex justify-start">
+                            <div className="max-w-[85%] rounded-2xl rounded-bl-md bg-kumo-base text-kumo-default leading-relaxed">
+                              <Streamdown
+                                className="sd-theme rounded-2xl rounded-bl-md p-3"
+                                plugins={{ code }}
+                                controls={false}
+                                isAnimating={isLastAssistant && isStreaming}
+                              >
+                                {part.text}
+                              </Streamdown>
+                            </div>
+                          </div>
+                        );
+                      }
 
-      {/* Input */}
-      <div className="border-t border-kumo-line bg-kumo-base">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            send();
-          }}
-          className="max-w-3xl mx-auto px-5 py-4"
-        >
-          <div className="flex items-end gap-3 rounded-xl border border-kumo-line bg-kumo-base p-3 shadow-sm focus-within:ring-2 focus-within:ring-kumo-ring focus-within:border-transparent transition-shadow">
-            <InputArea
-              ref={textareaRef}
-              value={input}
-              onValueChange={setInput}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  send();
-                }
-              }}
-              onInput={(e) => {
-                const el = e.currentTarget;
-                el.style.height = "auto";
-                el.style.height = `${el.scrollHeight}px`;
-              }}
-              placeholder="Paste an alert or logs, or ask a question..."
-              disabled={!connected || isStreaming}
-              rows={1}
-              className="flex-1 ring-0! focus:ring-0! shadow-none! bg-transparent! outline-none! resize-none max-h-40"
-            />
-            {isStreaming ? (
-              <Button
-                type="button"
-                variant="secondary"
-                shape="square"
-                aria-label="Stop generation"
-                icon={<StopIcon size={18} />}
-                onClick={stop}
-                className="mb-0.5"
-              />
-            ) : (
-              <Button
-                type="submit"
-                variant="primary"
-                shape="square"
-                aria-label="Send message"
-                disabled={!input.trim() || !connected}
-                icon={<PaperPlaneRightIcon size={18} />}
-                className="mb-0.5"
-              />
-            )}
+                      return null;
+                    })}
+                  </div>
+                );
+              })}
+
+              <div ref={messagesEndRef} />
+            </div>
           </div>
-        </form>
-        <div className="flex justify-center pb-3">
-          <PoweredByCloudflare href="https://developers.cloudflare.com/agents/" />
+
+          {/* Input */}
+          <div className="border-t border-kumo-line bg-kumo-base">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                send();
+              }}
+              className="max-w-3xl mx-auto px-5 py-4"
+            >
+              <div className="flex items-end gap-3 rounded-xl border border-kumo-line bg-kumo-base p-3 shadow-sm focus-within:ring-2 focus-within:ring-kumo-ring focus-within:border-transparent transition-shadow">
+                <InputArea
+                  ref={textareaRef}
+                  value={input}
+                  onValueChange={setInput}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      send();
+                    }
+                  }}
+                  onInput={(e) => {
+                    const el = e.currentTarget;
+                    el.style.height = "auto";
+                    el.style.height = `${el.scrollHeight}px`;
+                  }}
+                  placeholder="Paste an alert or logs, or ask a question..."
+                  disabled={!connected || isStreaming}
+                  rows={1}
+                  className="flex-1 ring-0! focus:ring-0! shadow-none! bg-transparent! outline-none! resize-none max-h-40"
+                />
+                {isStreaming ? (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    shape="square"
+                    aria-label="Stop generation"
+                    icon={<StopIcon size={18} />}
+                    onClick={stop}
+                    className="mb-0.5"
+                  />
+                ) : (
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    shape="square"
+                    aria-label="Send message"
+                    disabled={!input.trim() || !connected}
+                    icon={<PaperPlaneRightIcon size={18} />}
+                    className="mb-0.5"
+                  />
+                )}
+              </div>
+            </form>
+            <div className="flex justify-center pb-3">
+              <PoweredByCloudflare href="https://developers.cloudflare.com/agents/" />
+            </div>
+          </div>
         </div>
+
+        {/* Notes side panel: always visible on md+, toggled overlay on small screens */}
+        <aside
+          className={`${
+            showNotes ? "flex" : "hidden"
+          } md:flex flex-col w-80 max-w-[85vw] shrink-0 border-l border-kumo-line bg-kumo-elevated absolute inset-y-0 right-0 z-20 shadow-lg md:static md:shadow-none`}
+        >
+          <NotesPanel
+            notes={notes}
+            connected={connected}
+            onAdd={addNote}
+            onSetStatus={setNoteStatus}
+            onDelete={deleteNote}
+          />
+        </aside>
       </div>
     </div>
   );
